@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ZeroHawkeye/wordZero/pkg/document"
+	"github.com/jojopanmee/wordZero/pkg/document"
 )
 
 func main() {

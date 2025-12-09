@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/ZeroHawkeye/wordZero/pkg/markdown"
+	"github.com/jojopanmee/wordZero/pkg/markdown"
 )
 
 func main() {
