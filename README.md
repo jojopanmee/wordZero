@@ -20,7 +20,7 @@
 ## Project Introduction
 
 WordZero is a Golang-based Word document manipulation library that provides basic document creation and modification operations. This library follows the latest Office Open XML (OOXML) specifications and focuses on supporting modern Word document format (.docx).
-
+This fork repo, is just a version for my own use (docx editing that can be sent to gotenberg for pdf rendering)
 ### Core Features
 
 - 🚀 **Complete Document Operations**: Create, read, and modify Word documents
