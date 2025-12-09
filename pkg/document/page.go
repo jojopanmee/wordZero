@@ -73,9 +73,9 @@ type SectionProperties struct {
 // PageSizeXML 页面尺寸XML结构
 type PageSizeXML struct {
 	XMLName xml.Name `xml:"w:pgSz"`
-	W       string   `xml:"w:w,attr"`      // 页面宽度（twips）
-	H       string   `xml:"w:h,attr"`      // 页面高度（twips）
-	Orient  string   `xml:"w:orient,attr"` // 页面方向
+	W       string   `xml:"w:w,attr"`                // 页面宽度（twips）
+	H       string   `xml:"w:h,attr"`                // 页面高度（twips）
+	Orient  string   `xml:"w:orient,attr,omitempty"` // 页面方向
 }
 
 // PageMargin 页面边距
