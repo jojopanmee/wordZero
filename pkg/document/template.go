@@ -75,6 +75,29 @@ type TemplateData struct {
 	Images     map[string]*TemplateImageData // 图片数据
 }
 
+// Clone 创建模板数据的副本
+func (td *TemplateData) Clone() *TemplateData {
+	if td == nil {
+		return NewTemplateData()
+	}
+	clone := NewTemplateData()
+	for k, v := range td.Variables {
+		clone.Variables[k] = v
+	}
+	for k, v := range td.Lists {
+		items := make([]interface{}, len(v))
+		copy(items, v)
+		clone.Lists[k] = items
+	}
+	for k, v := range td.Conditions {
+		clone.Conditions[k] = v
+	}
+	for k, v := range td.Images {
+		clone.Images[k] = v
+	}
+	return clone
+}
+
 // TemplateImageData 模板图片数据
 type TemplateImageData struct {
 	FilePath string       // 图片文件路径
@@ -343,6 +366,10 @@ func (te *TemplateEngine) RenderToDocument(templateName string, data *TemplateDa
 
 	// 处理图片占位符
 	if err := te.processImagePlaceholders(doc, data); err != nil {
+		return nil, WrapErrorWithContext("render_to_document", err, templateName)
+	}
+
+	if err := doc.ValidateNoTemplatePlaceholders(); err != nil {
 		return nil, WrapErrorWithContext("render_to_document", err, templateName)
 	}
 
@@ -1112,6 +1139,10 @@ func (te *TemplateEngine) cloneRun(source *Run) Run {
 		Text:       Text{Content: source.Text.Content, Space: source.Text.Space},
 	}
 
+	if source.Break != nil {
+		newRun.Break = &Break{Type: source.Break.Type}
+	}
+
 	// 复制图像（如果有）
 	if source.Drawing != nil {
 		// 暂时保持简单复制，图像的深度复制比较复杂
@@ -1304,6 +1335,22 @@ func (te *TemplateEngine) cloneTableProperties(source *TableProperties) *TablePr
 		props.TableInd = &TableIndentation{
 			W:    source.TableInd.W,
 			Type: source.TableInd.Type,
+		}
+	}
+
+	// 复制表格定位属性
+	if source.TablePositioning != nil {
+		props.TablePositioning = &TablePositioning{
+			LeftFromText:   source.TablePositioning.LeftFromText,
+			RightFromText:  source.TablePositioning.RightFromText,
+			TopFromText:    source.TablePositioning.TopFromText,
+			BottomFromText: source.TablePositioning.BottomFromText,
+			VertAnchor:     source.TablePositioning.VertAnchor,
+			HorzAnchor:     source.TablePositioning.HorzAnchor,
+			TblpXSpec:      source.TablePositioning.TblpXSpec,
+			TblpYSpec:      source.TablePositioning.TblpYSpec,
+			TblpX:          source.TablePositioning.TblpX,
+			TblpY:          source.TablePositioning.TblpY,
 		}
 	}
 
@@ -1790,6 +1837,10 @@ func (te *TemplateEngine) RenderTemplateToDocument(templateName string, data *Te
 			return nil, WrapErrorWithContext("render_template_to_document", err, templateName)
 		}
 
+		if err := doc.ValidateNoTemplatePlaceholders(); err != nil {
+			return nil, WrapErrorWithContext("render_template_to_document", err, templateName)
+		}
+
 		return doc, nil
 	}
 
@@ -1890,6 +1941,27 @@ func (te *TemplateEngine) replaceVariablesInXMLPart(xmlData []byte, data *Templa
 	return []byte(content), nil
 }
 
+func (te *TemplateEngine) replaceVariablesInDrawingParts(doc *Document, data *TemplateData) error {
+	for partName := range doc.parts {
+		if strings.HasPrefix(partName, "word/drawings/") && strings.HasSuffix(partName, ".xml") {
+			content := string(doc.parts[partName])
+			content = headerFooterVarPattern.ReplaceAllStringFunc(content, func(match string) string {
+				matches := headerFooterVarPattern.FindStringSubmatch(match)
+				if len(matches) < 2 {
+					return match
+				}
+				varName := matches[1]
+				if value, exists := data.Variables[varName]; exists {
+					return te.escapeXMLContent(te.interfaceToString(value))
+				}
+				return match
+			})
+			doc.parts[partName] = []byte(content)
+		}
+	}
+	return nil
+}
+
 // escapeXMLContent 转义XML特殊字符
 func (te *TemplateEngine) escapeXMLContent(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
@@ -1901,118 +1973,208 @@ func (te *TemplateEngine) escapeXMLContent(s string) string {
 }
 
 // processDocumentLevelLoops 处理文档级别的循环（跨段落）
+var loopStartPattern = regexp.MustCompile(`\{\{#each\s+\w+\}\}`)
+
 func (te *TemplateEngine) processDocumentLevelLoops(doc *Document, data *TemplateData) error {
 	elements := doc.Body.Elements
-	newElements := make([]interface{}, 0)
+	newElements := make([]interface{}, 0, len(elements))
+	eachPattern := regexp.MustCompile(`\{\{#each\s+(\w+)\}\}`)
 
 	i := 0
 	for i < len(elements) {
 		element := elements[i]
-
-		// 检查当前元素是否包含循环开始标记
+		listVarName := ""
 		if para, ok := element.(*Paragraph); ok {
-			// 获取段落的完整文本
-			fullText := ""
-			for _, run := range para.Runs {
-				fullText += run.Text.Content
-			}
-
-			// 检查是否包含循环开始标记
-			eachPattern := regexp.MustCompile(`\{\{#each\s+(\w+)\}\}`)
+			fullText := te.getParagraphText(para)
 			matches := eachPattern.FindStringSubmatch(fullText)
-
 			if len(matches) > 1 {
-				listVarName := matches[1]
-
-				// 找到循环结束位置
-				loopEndIndex := -1
-				templateElements := make([]interface{}, 0)
-
-				// 收集循环模板元素（从当前位置到结束标记）
-				for j := i; j < len(elements); j++ {
-					templateElements = append(templateElements, elements[j])
-
-					if nextPara, ok := elements[j].(*Paragraph); ok {
-						nextText := ""
-						for _, run := range nextPara.Runs {
-							nextText += run.Text.Content
-						}
-
-						if strings.Contains(nextText, "{{/each}}") {
-							loopEndIndex = j
-							break
-						}
-					}
-				}
-
-				if loopEndIndex >= 0 {
-					// 处理循环
-					if listData, exists := data.Lists[listVarName]; exists {
-						// 为每个数据项生成元素
-						for _, item := range listData {
-							if itemMap, ok := item.(map[string]interface{}); ok {
-								// 复制模板元素并替换变量
-								for _, templateElement := range templateElements {
-									if templatePara, ok := templateElement.(*Paragraph); ok {
-										newPara := te.cloneParagraph(templatePara)
-
-										// 处理段落文本
-										fullText := ""
-										for _, run := range newPara.Runs {
-											fullText += run.Text.Content
-										}
-
-										// 移除循环标记
-										content := fullText
-										content = regexp.MustCompile(`\{\{#each\s+\w+\}\}`).ReplaceAllString(content, "")
-										content = regexp.MustCompile(`\{\{/each\}\}`).ReplaceAllString(content, "")
-
-										// 替换变量
-										for key, value := range itemMap {
-											placeholder := fmt.Sprintf("{{%s}}", key)
-											content = strings.ReplaceAll(content, placeholder, te.interfaceToString(value))
-										}
-
-										// 如果内容不为空，创建新段落
-										if strings.TrimSpace(content) != "" {
-											newPara.Runs = []Run{{
-												Text: Text{Content: content},
-												Properties: &RunProperties{
-													FontFamily: &FontFamily{
-														ASCII:    "仿宋",
-														HAnsi:    "仿宋",
-														EastAsia: "仿宋",
-													},
-													Bold: &Bold{},
-												},
-											}}
-											newElements = append(newElements, newPara)
-										}
-									}
-								}
-							}
-						}
-					}
-
-					// 跳过循环模板元素
-					i = loopEndIndex + 1
-					continue
-				}
+				listVarName = matches[1]
 			}
 		}
 
-		// 不是循环元素，直接添加
+		if listVarName != "" {
+			loopEndIndex := -1
+			templateElements := make([]interface{}, 0)
+			for j := i; j < len(elements); j++ {
+				templateElements = append(templateElements, elements[j])
+				if te.elementContainsLoopMarker(elements[j], "{{/each}}") {
+					loopEndIndex = j
+					break
+				}
+			}
+
+			if loopEndIndex >= 0 {
+				if listData, exists := data.Lists[listVarName]; exists {
+					for _, item := range listData {
+						mergedData := data.Clone()
+						if itemMap, ok := item.(map[string]interface{}); ok {
+							mergedData.SetVariables(itemMap)
+						} else {
+							mergedData.SetVariable(listVarName, item)
+						}
+
+						for idx := range templateElements {
+							cloned := te.cloneElement(templateElements[idx])
+							te.removeLoopMarkersFromElement(cloned)
+							if err := te.replaceVariablesInElement(cloned, mergedData); err != nil {
+								return err
+							}
+							if te.elementIsEmpty(cloned) {
+								continue
+							}
+							newElements = append(newElements, cloned)
+						}
+					}
+				}
+
+				i = loopEndIndex + 1
+				continue
+			}
+		}
+
 		newElements = append(newElements, element)
 		i++
 	}
 
-	// 更新文档元素
 	doc.Body.Elements = newElements
 	return nil
 }
 
+func (te *TemplateEngine) getParagraphText(para *Paragraph) string {
+	if para == nil {
+		return ""
+	}
+	var builder strings.Builder
+	for _, run := range para.Runs {
+		builder.WriteString(run.Text.Content)
+	}
+	return builder.String()
+}
+
+func (te *TemplateEngine) elementContainsLoopMarker(element interface{}, marker string) bool {
+	para, ok := element.(*Paragraph)
+	if !ok {
+		return false
+	}
+	return strings.Contains(te.getParagraphText(para), marker)
+}
+
+func (te *TemplateEngine) cloneElement(element interface{}) interface{} {
+	switch elem := element.(type) {
+	case *Paragraph:
+		return te.cloneParagraph(elem)
+	case *Table:
+		return te.cloneTable(elem)
+	case *SectionProperties:
+		return te.cloneSectionProperties(elem)
+	default:
+		return element
+	}
+}
+
+func (te *TemplateEngine) replaceVariablesInElement(element interface{}, data *TemplateData) error {
+	switch elem := element.(type) {
+	case *Paragraph:
+		return te.replaceVariablesInParagraph(elem, data)
+	case *Table:
+		return te.replaceVariablesInTable(elem, data)
+	default:
+		return nil
+	}
+}
+
+func (te *TemplateEngine) removeLoopMarkersFromElement(element interface{}) {
+	switch elem := element.(type) {
+	case *Paragraph:
+		for i := range elem.Runs {
+			text := elem.Runs[i].Text.Content
+			text = loopStartPattern.ReplaceAllString(text, "")
+			text = strings.ReplaceAll(text, "{{/each}}", "")
+			elem.Runs[i].Text.Content = text
+		}
+	case *Table:
+		for ri := range elem.Rows {
+			row := &elem.Rows[ri]
+			for ci := range row.Cells {
+				cell := &row.Cells[ci]
+				for pi := range cell.Paragraphs {
+					te.removeLoopMarkersFromElement(&cell.Paragraphs[pi])
+				}
+				for ti := range cell.Tables {
+					te.removeLoopMarkersFromElement(&cell.Tables[ti])
+				}
+			}
+		}
+	}
+}
+
+func paragraphHasVisualSpacing(para *Paragraph) bool {
+	if para == nil || para.Properties == nil {
+		return false
+	}
+	if para.Properties.Spacing != nil {
+		return true
+	}
+	for _, run := range para.Runs {
+		if run.Break != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (te *TemplateEngine) elementIsEmpty(element interface{}) bool {
+	switch elem := element.(type) {
+	case *Paragraph:
+		text := strings.TrimSpace(te.getParagraphText(elem))
+		if text != "" {
+			return false
+		}
+		// keep paragraphs used purely for spacing/styling
+		if paragraphHasVisualSpacing(elem) {
+			return false
+		}
+		return true
+	case Paragraph:
+		return te.elementIsEmpty(&elem)
+	case *Table:
+		for ri := range elem.Rows {
+			row := &elem.Rows[ri]
+			for ci := range row.Cells {
+				if !te.cellIsEmpty(&row.Cells[ci]) {
+					return false
+				}
+			}
+		}
+		return true
+	case Table:
+		return te.elementIsEmpty(&elem)
+	default:
+		return false
+	}
+}
+
+func (te *TemplateEngine) cellIsEmpty(cell *TableCell) bool {
+	for pi := range cell.Paragraphs {
+		if !te.elementIsEmpty(&cell.Paragraphs[pi]) {
+			return false
+		}
+	}
+	for ti := range cell.Tables {
+		if !te.elementIsEmpty(&cell.Tables[ti]) {
+			return false
+		}
+	}
+	return true
+}
+
 // replaceVariablesInParagraph 在段落中替换变量（改进版本，更好地保持样式）
 func (te *TemplateEngine) replaceVariablesInParagraph(para *Paragraph, data *TemplateData) error {
+	for _, run := range para.Runs {
+		if run.Break != nil {
+			return nil
+		}
+	}
 	// 首先识别所有变量占位符的位置
 	fullText := ""
 	runInfos := make([]struct {
@@ -2044,84 +2206,15 @@ func (te *TemplateEngine) replaceVariablesInParagraph(para *Paragraph, data *Tem
 		return nil
 	}
 
-	// 先处理循环语句（包括非表格循环）
-	processedText, hasLoopChanges := te.processNonTableLoops(fullText, data)
-	if hasLoopChanges {
-		// 重新构建段落
-		para.Runs = []Run{{
-			Text: Text{Content: processedText},
-			Properties: &RunProperties{
-				FontFamily: &FontFamily{
-					ASCII:    "仿宋",
-					HAnsi:    "仿宋",
-					EastAsia: "仿宋",
-				},
-				Bold: &Bold{},
-			},
-		}}
-		fullText = processedText
-	}
-
 	// 使用新的逐个变量替换方法
 	newRuns, hasVarChanges := te.replaceVariablesSequentially(runInfos, fullText, data)
 
 	// 如果有变化，更新段落的Run
-	if hasVarChanges || hasLoopChanges {
+	if hasVarChanges {
 		para.Runs = newRuns
 	}
 
 	return nil
-}
-
-// processNonTableLoops 处理非表格循环
-func (te *TemplateEngine) processNonTableLoops(content string, data *TemplateData) (string, bool) {
-	eachPattern := regexp.MustCompile(`(?s)\{\{#each\s+(\w+)\}\}(.*?)\{\{/each\}\}`)
-	matches := eachPattern.FindAllStringSubmatchIndex(content, -1)
-
-	if len(matches) == 0 {
-		return content, false
-	}
-
-	var result strings.Builder
-	lastEnd := 0
-	hasChanges := false
-
-	for _, match := range matches {
-		// 找到变量名和块内容
-		fullMatch := content[match[0]:match[1]]
-		submatch := eachPattern.FindStringSubmatch(fullMatch)
-		if len(submatch) >= 3 {
-			listVar := submatch[1]
-			blockContent := submatch[2]
-
-			// 添加循环前的内容
-			result.WriteString(content[lastEnd:match[0]])
-
-			// 处理循环
-			if listData, exists := data.Lists[listVar]; exists {
-				for _, item := range listData {
-					if itemMap, ok := item.(map[string]interface{}); ok {
-						loopContent := blockContent
-						for key, value := range itemMap {
-							placeholder := fmt.Sprintf("{{%s}}", key)
-							loopContent = strings.ReplaceAll(loopContent, placeholder, te.interfaceToString(value))
-						}
-						result.WriteString(loopContent)
-					}
-				}
-			}
-
-			lastEnd = match[1]
-			hasChanges = true
-		}
-	}
-
-	// 添加剩余内容
-	if lastEnd < len(content) {
-		result.WriteString(content[lastEnd:])
-	}
-
-	return result.String(), hasChanges
 }
 
 // replaceVariablesSequentially 逐个替换变量，保持样式

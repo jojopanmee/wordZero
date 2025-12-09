@@ -17,16 +17,17 @@ type Table struct {
 
 // TableProperties 表格属性
 type TableProperties struct {
-	XMLName      xml.Name          `xml:"w:tblPr"`
-	TableW       *TableWidth       `xml:"w:tblW,omitempty"`
-	TableJc      *TableJc          `xml:"w:jc,omitempty"`
-	TableLook    *TableLook        `xml:"w:tblLook,omitempty"`
-	TableStyle   *TableStyle       `xml:"w:tblStyle,omitempty"`   // 表格样式
-	TableBorders *TableBorders     `xml:"w:tblBorders,omitempty"` // 表格边框
-	Shd          *TableShading     `xml:"w:shd,omitempty"`        // 表格底纹/背景
-	TableCellMar *TableCellMargins `xml:"w:tblCellMar,omitempty"` // 表格单元格边距
-	TableLayout  *TableLayoutType  `xml:"w:tblLayout,omitempty"`  // 表格布局类型
-	TableInd     *TableIndentation `xml:"w:tblInd,omitempty"`     // 表格缩进
+	XMLName          xml.Name          `xml:"w:tblPr"`
+	TableW           *TableWidth       `xml:"w:tblW,omitempty"`
+	TableJc          *TableJc          `xml:"w:jc,omitempty"`
+	TableLook        *TableLook        `xml:"w:tblLook,omitempty"`
+	TableStyle       *TableStyle       `xml:"w:tblStyle,omitempty"`   // 表格样式
+	TableBorders     *TableBorders     `xml:"w:tblBorders,omitempty"` // 表格边框
+	Shd              *TableShading     `xml:"w:shd,omitempty"`        // 表格底纹/背景
+	TableCellMar     *TableCellMargins `xml:"w:tblCellMar,omitempty"` // 表格单元格边距
+	TableLayout      *TableLayoutType  `xml:"w:tblLayout,omitempty"`  // 表格布局类型
+	TableInd         *TableIndentation `xml:"w:tblInd,omitempty"`     // 表格缩进
+	TablePositioning *TablePositioning `xml:"w:tblpPr,omitempty"`     // 表格定位属性
 }
 
 // TableWidth 表格宽度

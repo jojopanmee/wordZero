@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -32,6 +34,8 @@ type Document struct {
 	// 图片ID计数器，确保每个图片都有唯一的ID
 	nextImageID int
 }
+
+var templatePlaceholderPattern = regexp.MustCompile(`\{\{[^{}]+\}\}`)
 
 // Body 表示文档主体
 type Body struct {
@@ -347,9 +351,10 @@ type Relationships struct {
 
 // Relationship 单个关系
 type Relationship struct {
-	ID     string `xml:"Id,attr"`
-	Type   string `xml:"Type,attr"`
-	Target string `xml:"Target,attr"`
+	ID         string `xml:"Id,attr"`
+	Type       string `xml:"Type,attr"`
+	Target     string `xml:"Target,attr"`
+	TargetMode string `xml:"TargetMode,attr,omitempty"`
 }
 
 // ContentTypes 内容类型
@@ -2358,6 +2363,12 @@ func (d *Document) parseRun(decoder *xml.Decoder, startElement xml.StartElement)
 					return nil, err
 				}
 				run.Drawing = drawing
+			case "br":
+				br := &Break{Type: getAttributeValue(t.Attr, "type")}
+				run.Break = br
+				if err := d.skipElement(decoder, t.Name.Local); err != nil {
+					return nil, err
+				}
 			default:
 				if err := d.skipElement(decoder, t.Name.Local); err != nil {
 					return nil, err
@@ -2537,6 +2548,23 @@ func (d *Document) parseTableProperties(decoder *xml.Decoder, table *Table) erro
 		switch t := token.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
+			case "tblpPr":
+				positioning := &TablePositioning{
+					LeftFromText:   getAttributeValue(t.Attr, "leftFromText"),
+					RightFromText:  getAttributeValue(t.Attr, "rightFromText"),
+					TopFromText:    getAttributeValue(t.Attr, "topFromText"),
+					BottomFromText: getAttributeValue(t.Attr, "bottomFromText"),
+					VertAnchor:     getAttributeValue(t.Attr, "vertAnchor"),
+					HorzAnchor:     getAttributeValue(t.Attr, "horzAnchor"),
+					TblpXSpec:      getAttributeValue(t.Attr, "tblpXSpec"),
+					TblpYSpec:      getAttributeValue(t.Attr, "tblpYSpec"),
+					TblpX:          getAttributeValue(t.Attr, "tblpX"),
+					TblpY:          getAttributeValue(t.Attr, "tblpY"),
+				}
+				table.Properties.TablePositioning = positioning
+				if err := d.skipElement(decoder, t.Name.Local); err != nil {
+					return err
+				}
 			case "tblW":
 				w := getAttributeValue(t.Attr, "w")
 				wType := getAttributeValue(t.Attr, "type")
@@ -2976,26 +3004,65 @@ func (d *Document) serializeRelationships() {
 
 // serializeDocumentRelationships 序列化文档关系
 func (d *Document) serializeDocumentRelationships() {
-	// 获取已存在的关系，从索引1开始（保留给styles.xml）
-	relationships := []Relationship{
-		{
-			ID:     "rId1",
-			Type:   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles",
-			Target: "styles.xml",
-		},
+	const (
+		relNamespace = "http://schemas.openxmlformats.org/package/2006/relationships"
+		styleRelType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles"
+	)
+
+	usedIDs := make(map[string]struct{})
+	relationships := make([]Relationship, 0)
+	if d.documentRelationships != nil {
+		for _, rel := range d.documentRelationships.Relationships {
+			relationships = append(relationships, rel)
+			if rel.ID != "" {
+				usedIDs[rel.ID] = struct{}{}
+			}
+		}
 	}
 
-	// 添加动态创建的文档级关系（如页眉、页脚等）
-	relationships = append(relationships, d.documentRelationships.Relationships...)
+	hasStyles := false
+	for _, rel := range relationships {
+		if rel.Type == styleRelType {
+			hasStyles = true
+			break
+		}
+	}
 
-	// 创建文档关系
+	if !hasStyles {
+		styleID := generateUniqueRelationshipID(usedIDs)
+		styleRel := Relationship{
+			ID:     styleID,
+			Type:   styleRelType,
+			Target: "styles.xml",
+		}
+		relationships = append([]Relationship{styleRel}, relationships...)
+	}
+
+	xmlns := relNamespace
+	if d.documentRelationships != nil && d.documentRelationships.Xmlns != "" {
+		xmlns = d.documentRelationships.Xmlns
+	}
+
 	docRels := &Relationships{
-		Xmlns:         "http://schemas.openxmlformats.org/package/2006/relationships",
+		Xmlns:         xmlns,
 		Relationships: relationships,
 	}
 
 	data, _ := xml.MarshalIndent(docRels, "", "  ")
 	d.parts["word/_rels/document.xml.rels"] = append([]byte(xml.Header), data...)
+}
+
+func generateUniqueRelationshipID(used map[string]struct{}) string {
+	if used == nil {
+		used = make(map[string]struct{})
+	}
+	for i := 1; ; i++ {
+		id := fmt.Sprintf("rId%d", i)
+		if _, exists := used[id]; !exists {
+			used[id] = struct{}{}
+			return id
+		}
+	}
 }
 
 // serializeStyles 序列化样式
@@ -3135,17 +3202,14 @@ func (d *Document) parseDocumentRelationships() error {
 		return WrapError("parse_document_relationships", err)
 	}
 
-	// 保存解析的关系（不包括styles.xml，因为它在serializeDocumentRelationships中会自动添加）
-	// 过滤掉styles.xml的关系，因为它总是rId1并在保存时自动添加
-	filteredRels := make([]Relationship, 0)
-	for _, rel := range relationships.Relationships {
-		if rel.Type != "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" {
-			filteredRels = append(filteredRels, rel)
-		}
+	if d.documentRelationships == nil {
+		d.documentRelationships = &Relationships{}
 	}
 
-	d.documentRelationships.Relationships = filteredRels
-	Debugf("文档关系解析完成，共 %d 个关系", len(filteredRels))
+	d.documentRelationships.Xmlns = relationships.Xmlns
+	d.documentRelationships.Relationships = make([]Relationship, len(relationships.Relationships))
+	copy(d.documentRelationships.Relationships, relationships.Relationships)
+	Debugf("文档关系解析完成，共 %d 个关系", len(d.documentRelationships.Relationships))
 	return nil
 }
 
@@ -3216,6 +3280,114 @@ func (d *Document) ToBytes() ([]byte, error) {
 	}
 
 	return buf.Bytes(), nil
+}
+
+func (d *Document) ValidateNoTemplatePlaceholders() error {
+	placeholders := d.collectTemplatePlaceholders()
+	if len(placeholders) == 0 {
+		return nil
+	}
+	sort.Strings(placeholders)
+	preview := placeholders
+	if len(preview) > 5 {
+		preview = preview[:5]
+	}
+	message := strings.Join(preview, ", ")
+	if len(placeholders) > len(preview) {
+		remaining := len(placeholders) - len(preview)
+		message = fmt.Sprintf("%s (and %d more)", message, remaining)
+	}
+	return fmt.Errorf("template placeholders not replaced: %s", message)
+}
+
+func (d *Document) collectTemplatePlaceholders() []string {
+	if d == nil {
+		return nil
+	}
+	placeholderSet := make(map[string]struct{})
+	addMatch := func(match string) {
+		if match == "" {
+			return
+		}
+		placeholderSet[match] = struct{}{}
+	}
+
+	if d.Body != nil {
+		for _, element := range d.Body.Elements {
+			d.collectPlaceholdersFromElement(element, addMatch)
+		}
+	}
+
+	for partName, partData := range d.parts {
+		if strings.HasPrefix(partName, "word/header") || strings.HasPrefix(partName, "word/footer") {
+			matches := templatePlaceholderPattern.FindAllString(string(partData), -1)
+			for _, match := range matches {
+				addMatch(match)
+			}
+		}
+	}
+
+	if len(placeholderSet) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(placeholderSet))
+	for placeholder := range placeholderSet {
+		result = append(result, placeholder)
+	}
+	return result
+}
+
+func (d *Document) collectPlaceholdersFromElement(element interface{}, add func(string)) {
+	switch elem := element.(type) {
+	case *Paragraph:
+		collectPlaceholdersFromParagraph(elem, add)
+	case Paragraph:
+		para := elem
+		collectPlaceholdersFromParagraph(&para, add)
+	case *Table:
+		collectPlaceholdersFromTable(elem, add)
+	case Table:
+		table := elem
+		collectPlaceholdersFromTable(&table, add)
+	}
+}
+
+func collectPlaceholdersFromParagraph(para *Paragraph, add func(string)) {
+	if para == nil || len(para.Runs) == 0 {
+		return
+	}
+	var builder strings.Builder
+	for i := range para.Runs {
+		builder.WriteString(para.Runs[i].Text.Content)
+	}
+	text := builder.String()
+	if text == "" {
+		return
+	}
+	matches := templatePlaceholderPattern.FindAllString(text, -1)
+	for _, match := range matches {
+		add(match)
+	}
+}
+
+func collectPlaceholdersFromTable(table *Table, add func(string)) {
+	if table == nil {
+		return
+	}
+	for i := range table.Rows {
+		row := &table.Rows[i]
+		for j := range row.Cells {
+			cell := &row.Cells[j]
+			for k := range cell.Paragraphs {
+				para := cell.Paragraphs[k]
+				collectPlaceholdersFromParagraph(&para, add)
+			}
+			for k := range cell.Tables {
+				nested := cell.Tables[k]
+				collectPlaceholdersFromTable(&nested, add)
+			}
+		}
+	}
 }
 
 // GetParagraphs 获取所有段落
