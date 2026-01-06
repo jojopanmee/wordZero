@@ -180,7 +180,7 @@ $$x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$$
 
 	// 表格可能由于格式原因无法解析，只验证文档生成成功
 	// 实际项目中表格内包含math公式的情况较复杂
-	t.Logf("Document generated with %d paragraphs and %d tables", 
+	t.Logf("Document generated with %d paragraphs and %d tables",
 		len(paragraphs), len(doc.Body.GetTables()))
 }
 

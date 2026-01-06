@@ -97,7 +97,7 @@ func TestRealWorldNestedTableScenario(t *testing.T) {
 
 	// 将家庭成员表格嵌套到主表格的单元格中
 	mainTable.Rows[1].Cells[1].Tables = []document.Table{*familyTable}
-	
+
 	// 保存模板文档
 	templatePath := "output/resume_template.docx"
 	err = doc.Save(templatePath)

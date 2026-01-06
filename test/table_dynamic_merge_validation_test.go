@@ -93,7 +93,7 @@ func TestTableDynamicRowMergeValidation(t *testing.T) {
 			t.Run(tm.name, func(t *testing.T) {
 				// 记录合并前该行的单元格数
 				cellCountBefore := len(table.Rows[tm.row].Cells)
-				
+
 				// 执行合并
 				err := table.MergeCellsHorizontal(tm.row, tm.startCol, tm.endCol)
 				if err != nil {
@@ -104,7 +104,7 @@ func TestTableDynamicRowMergeValidation(t *testing.T) {
 				cellCountAfter := len(table.Rows[tm.row].Cells)
 				expectedCellCount := cellCountBefore - (tm.endCol - tm.startCol)
 				if cellCountAfter != expectedCellCount {
-					t.Errorf("%s后单元格数不正确: 期望%d，实际%d", 
+					t.Errorf("%s后单元格数不正确: 期望%d，实际%d",
 						tm.name, expectedCellCount, cellCountAfter)
 				}
 
@@ -310,7 +310,7 @@ func TestTableGridColCountAfterOperations(t *testing.T) {
 
 	t.Run("网格列数在添加行后不变", func(t *testing.T) {
 		doc := document.New()
-		
+
 		config := &document.TableConfig{
 			Rows:  5,
 			Cols:  4,
@@ -330,7 +330,7 @@ func TestTableGridColCountAfterOperations(t *testing.T) {
 
 		currentGridColCount := len(table.Grid.Cols)
 		if currentGridColCount != originalGridColCount {
-			t.Errorf("添加行后网格列数改变: 原始%d，现在%d", 
+			t.Errorf("添加行后网格列数改变: 原始%d，现在%d",
 				originalGridColCount, currentGridColCount)
 		}
 
@@ -343,7 +343,7 @@ func TestTableGridColCountAfterOperations(t *testing.T) {
 
 	t.Run("网格列数在合并单元格后不变", func(t *testing.T) {
 		doc := document.New()
-		
+
 		config := &document.TableConfig{
 			Rows:  5,
 			Cols:  6,

@@ -53,10 +53,17 @@ func main() {
 	codeTitle := doc.AddParagraph("代码示例")
 	codeTitle.SetStyle(style.StyleHeading3)
 
+<<<<<<< HEAD
 	codeExample := `go get github.com/jojopanmee/wordZero
 
 // 使用示例
 import "github.com/jojopanmee/wordZero/pkg/document"
+=======
+	codeExample := `go get github.com/zerx-lab/wordZero
+
+// 使用示例
+import "github.com/zerx-lab/wordZero/pkg/document"
+>>>>>>> upstream/main
 
 doc := document.New()
 doc.AddParagraph("Hello, WordZero!")
