@@ -1145,6 +1145,11 @@ func (te *TemplateEngine) cloneRun(source *Run) Run {
 		newRun.Break = &Break{Type: source.Break.Type}
 	}
 
+	if len(source.Tabs) > 0 {
+		newRun.Tabs = make([]RunTab, len(source.Tabs))
+		copy(newRun.Tabs, source.Tabs)
+	}
+
 	// 复制图像（如果有）
 	if source.Drawing != nil {
 		// 暂时保持简单复制，图像的深度复制比较复杂
@@ -1904,13 +1909,26 @@ func (te *TemplateEngine) removeEmptyParagraphs(doc *Document) {
 	newElements := make([]interface{}, 0, len(doc.Body.Elements))
 	for _, element := range doc.Body.Elements {
 		if para, ok := element.(*Paragraph); ok {
-			if strings.TrimSpace(te.getParagraphText(para)) == "" && te.conditionalParagraphs[para] {
+			if te.conditionalParagraphs[para] && te.isParagraphVisuallyEmpty(para) {
 				continue
 			}
 		}
 		newElements = append(newElements, element)
 	}
 	doc.Body.Elements = newElements
+}
+
+func (te *TemplateEngine) isParagraphVisuallyEmpty(para *Paragraph) bool {
+	text := te.getParagraphText(para)
+	for _, r := range text {
+		switch r {
+		case '\n', '\r', ' ':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // replaceVariablesInHeadersFooters 在页眉页脚中替换变量
@@ -2496,9 +2514,9 @@ func (te *TemplateEngine) extractRunsForSegment(originalRunInfos []struct {
 				// 确保索引在有效范围内
 				if relativeStart >= 0 && relativeEnd <= len(segmentText) && relativeStart < relativeEnd {
 					newRun.Text.Content = segmentText[relativeStart:relativeEnd]
-					if newRun.Text.Content != "" {
-						runs = append(runs, newRun)
-					}
+				}
+				if newRun.Text.Content != "" || len(newRun.Tabs) > 0 || newRun.Break != nil {
+					runs = append(runs, newRun)
 				}
 			}
 		}

@@ -196,6 +196,7 @@ type Run struct {
 	Properties *RunProperties  `xml:"w:rPr,omitempty"`
 	Text       Text            `xml:"w:t,omitempty"`
 	Break      *Break          `xml:"w:br,omitempty"` // 分页符 / Page break
+	Tabs       []RunTab        `xml:"w:tab,omitempty"`
 	Drawing    *DrawingElement `xml:"w:drawing,omitempty"`
 	FieldChar  *FieldChar      `xml:"w:fldChar,omitempty"`
 	InstrText  *InstrText      `xml:"w:instrText,omitempty"`
@@ -212,6 +213,13 @@ func (r *Run) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 	// 序列化RunProperties（如果存在）
 	if r.Properties != nil {
 		if err := e.EncodeElement(r.Properties, xml.StartElement{Name: xml.Name{Local: "w:rPr"}}); err != nil {
+			return err
+		}
+	}
+
+	// 序列化Tab（如果存在）
+	for range r.Tabs {
+		if err := e.EncodeElement(RunTab{}, xml.StartElement{Name: xml.Name{Local: "w:tab"}}); err != nil {
 			return err
 		}
 	}
@@ -340,6 +348,11 @@ type Text struct {
 type Break struct {
 	XMLName xml.Name `xml:"w:br"`
 	Type    string   `xml:"w:type,attr,omitempty"` // "page" 表示分页符 / "page" indicates a page break
+}
+
+// RunTab 表示制表符
+type RunTab struct {
+	XMLName xml.Name `xml:"w:tab"`
 }
 
 // Relationships 文档关系
@@ -2327,6 +2340,11 @@ func (d *Document) parseRun(decoder *xml.Decoder, startElement xml.StartElement)
 			case "br":
 				br := &Break{Type: getAttributeValue(t.Attr, "type")}
 				run.Break = br
+				if err := d.skipElement(decoder, t.Name.Local); err != nil {
+					return nil, err
+				}
+			case "tab":
+				run.Tabs = append(run.Tabs, RunTab{})
 				if err := d.skipElement(decoder, t.Name.Local); err != nil {
 					return nil, err
 				}
