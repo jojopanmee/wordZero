@@ -38,9 +38,10 @@ var headerFooterVarPattern = regexp.MustCompile(`\{\{(\w+)\}\}`)
 
 // TemplateEngine 模板引擎
 type TemplateEngine struct {
-	cache    map[string]*Template // 模板缓存
-	mutex    sync.RWMutex         // 读写锁
-	basePath string               // 基础路径
+	cache                 map[string]*Template // 模板缓存
+	mutex                 sync.RWMutex         // 读写锁
+	basePath              string               // 基础路径
+	conditionalParagraphs map[*Paragraph]bool
 }
 
 // Template 模板结构
@@ -110,8 +111,9 @@ type TemplateImageData struct {
 // NewTemplateEngine 创建新的模板引擎
 func NewTemplateEngine() *TemplateEngine {
 	return &TemplateEngine{
-		cache: make(map[string]*Template),
-		mutex: sync.RWMutex{},
+		cache:                 make(map[string]*Template),
+		mutex:                 sync.RWMutex{},
+		conditionalParagraphs: make(map[*Paragraph]bool),
 	}
 }
 
@@ -1856,9 +1858,17 @@ func (te *TemplateEngine) replaceVariablesInDocument(doc *Document, data *Templa
 		return err
 	}
 
-	for _, element := range doc.Body.Elements {
-		switch elem := element.(type) {
+	elements := doc.Body.Elements
+	for i := 0; i < len(elements); i++ {
+		switch elem := elements[i].(type) {
 		case *Paragraph:
+			if newElements, merged := te.mergeParagraphConditionals(elements, i); merged {
+				elements = newElements
+				doc.Body.Elements = elements
+				// 重新处理当前段落，避免跳过
+				i--
+				continue
+			}
 			// 处理段落中的变量替换
 			err := te.replaceVariablesInParagraph(elem, data)
 			if err != nil {
@@ -1886,7 +1896,21 @@ func (te *TemplateEngine) replaceVariablesInDocument(doc *Document, data *Templa
 		return err
 	}
 
+	te.removeEmptyParagraphs(doc)
 	return nil
+}
+
+func (te *TemplateEngine) removeEmptyParagraphs(doc *Document) {
+	newElements := make([]interface{}, 0, len(doc.Body.Elements))
+	for _, element := range doc.Body.Elements {
+		if para, ok := element.(*Paragraph); ok {
+			if strings.TrimSpace(te.getParagraphText(para)) == "" && te.conditionalParagraphs[para] {
+				continue
+			}
+		}
+		newElements = append(newElements, element)
+	}
+	doc.Body.Elements = newElements
 }
 
 // replaceVariablesInHeadersFooters 在页眉页脚中替换变量
@@ -2170,11 +2194,6 @@ func (te *TemplateEngine) cellIsEmpty(cell *TableCell) bool {
 
 // replaceVariablesInParagraph 在段落中替换变量（改进版本，更好地保持样式）
 func (te *TemplateEngine) replaceVariablesInParagraph(para *Paragraph, data *TemplateData) error {
-	for _, run := range para.Runs {
-		if run.Break != nil {
-			return nil
-		}
-	}
 	// 首先识别所有变量占位符的位置
 	fullText := ""
 	runInfos := make([]struct {
@@ -2215,6 +2234,65 @@ func (te *TemplateEngine) replaceVariablesInParagraph(para *Paragraph, data *Tem
 	}
 
 	return nil
+}
+
+func (te *TemplateEngine) mergeParagraphConditionals(elements []interface{}, startIndex int) ([]interface{}, bool) {
+	if startIndex >= len(elements) {
+		return elements, false
+	}
+
+	para, ok := elements[startIndex].(*Paragraph)
+	if !ok {
+		return elements, false
+	}
+
+	text := te.getParagraphText(para)
+	depthChange := te.conditionalDepthChange(text)
+	if depthChange <= 0 {
+		return elements, false
+	}
+
+	mergedRuns := make([]Run, len(para.Runs))
+	for i, run := range para.Runs {
+		mergedRuns[i] = te.cloneRun(&run)
+	}
+
+	depth := depthChange
+	endIndex := startIndex
+
+	for i := startIndex + 1; i < len(elements); i++ {
+		nextPara, ok := elements[i].(*Paragraph)
+		if !ok {
+			break
+		}
+
+		mergedRuns = append(mergedRuns, Run{Break: &Break{Type: "textWrapping"}})
+		for _, run := range nextPara.Runs {
+			mergedRuns = append(mergedRuns, te.cloneRun(&run))
+		}
+
+		text := te.getParagraphText(nextPara)
+		depth += te.conditionalDepthChange(text)
+		endIndex = i
+		if depth <= 0 {
+			break
+		}
+	}
+
+	if depth > 0 {
+		return elements, false
+	}
+
+	para.Runs = mergedRuns
+	te.conditionalParagraphs[para] = true
+
+	newElements := append([]interface{}{}, elements[:startIndex+1]...)
+	newElements = append(newElements, elements[endIndex+1:]...)
+	return newElements, true
+}
+
+func (te *TemplateEngine) conditionalDepthChange(text string) int {
+	return strings.Count(text, "{{#if") - strings.Count(text, "{{/if}}")
 }
 
 // replaceVariablesSequentially 逐个替换变量，保持样式
@@ -2300,24 +2378,68 @@ func (te *TemplateEngine) replaceVariablesSequentially(originalRunInfos []struct
 
 // processConditionalsPreservingRuns 处理条件语句但保持Run的独立性
 func (te *TemplateEngine) processConditionalsPreservingRuns(runs []Run, data *TemplateData) []Run {
-	finalRuns := make([]Run, 0)
+	if len(runs) == 0 {
+		return runs
+	}
 
+	var builder strings.Builder
 	for _, run := range runs {
-		originalContent := run.Text.Content
-		processedContent := te.renderConditionals(originalContent, data.Conditions)
+		builder.WriteString(run.Text.Content)
+	}
+	combinedText := builder.String()
+	processedText := te.renderConditionals(combinedText, data.Conditions)
 
-		// 如果内容发生变化，更新这个Run
-		if processedContent != originalContent {
-			newRun := run // 复制Run结构
-			newRun.Text.Content = processedContent
-			finalRuns = append(finalRuns, newRun)
-		} else {
-			// 内容没有变化，保持原样
-			finalRuns = append(finalRuns, run)
+	if processedText == combinedText {
+		return runs
+	}
+
+	return te.rebuildRunsWithProcessedText(runs, processedText)
+}
+
+func (te *TemplateEngine) rebuildRunsWithProcessedText(templateRuns []Run, processedText string) []Run {
+	if len(templateRuns) == 0 {
+		return templateRuns
+	}
+
+	remaining := []rune(processedText)
+	rebuilt := make([]Run, 0, len(templateRuns))
+
+	for _, run := range templateRuns {
+		if len(remaining) == 0 {
+			break
+		}
+
+		runLength := len([]rune(run.Text.Content))
+		if runLength == 0 {
+			continue
+		}
+
+		take := runLength
+		if take > len(remaining) {
+			take = len(remaining)
+		}
+
+		newRun := te.cloneRun(&run)
+		newRun.Text.Content = string(remaining[:take])
+		rebuilt = append(rebuilt, newRun)
+		remaining = remaining[take:]
+	}
+
+	if len(remaining) > 0 {
+		lastRun := te.cloneRun(&templateRuns[len(templateRuns)-1])
+		lastRun.Text.Content = string(remaining)
+		rebuilt = append(rebuilt, lastRun)
+		remaining = nil
+	}
+
+	filtered := make([]Run, 0, len(rebuilt))
+	for _, run := range rebuilt {
+		if run.Text.Content != "" {
+			filtered = append(filtered, run)
 		}
 	}
 
-	return finalRuns
+	return filtered
 }
 
 // processConditionals 处理条件语句
